@@ -9,11 +9,13 @@ import {
   ChevronLeft, 
   CheckCircle2,
   Sparkles,
-  Info
+  Info,
+  User,
+  Lock
 } from 'lucide-react';
 import { auth, db } from '../firebase';
-import { createUserWithEmailAndPassword, signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
 import { doc, setDoc, serverTimestamp, getDoc } from 'firebase/firestore';
+import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
 import { handleFirestoreError, OperationType } from '../utils/errorHandlers';
 
 interface OnboardingProps {
@@ -28,96 +30,83 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
     lastPeriodStart: '',
     notificationsEnabled: true,
     padReminders: true,
-    email: '',
+    username: '',
     password: '',
+    isLogin: false,
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const nextStep = () => setStep((s) => s + 1);
-  const prevStep = () => setStep((s) => s - 1);
-
-  const handleSignUp = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const userCredential = await createUserWithEmailAndPassword(auth, formData.email, formData.password);
-      const user = userCredential.user;
-      
-      const userPath = `users/${user.uid}`;
-      try {
-        const userDoc = await getDoc(doc(db, 'users', user.uid));
-        const userData: any = {
-          uid: user.uid,
-          email: user.email,
-          cycleLength: formData.cycleLength,
-          periodLength: formData.periodLength,
-          lastPeriodStart: formData.lastPeriodStart,
-          preferences: {
-            notificationsEnabled: formData.notificationsEnabled,
-            padReminders: formData.padReminders,
-          },
-        };
-
-        if (!userDoc.exists()) {
-          userData.createdAt = serverTimestamp();
-        }
-
-        await setDoc(doc(db, 'users', user.uid), userData, { merge: true });
-      } catch (err: any) {
-        if (err.code === 'permission-denied') {
-          handleFirestoreError(err, OperationType.WRITE, userPath);
-        }
-        throw err;
+  const nextStep = () => {
+    if (step === 3) { // Account step
+      if (!formData.username || !formData.password) {
+        setError("Please enter a username and password");
+        return;
       }
-      
-      onComplete();
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
+      if (formData.username.length < 3) {
+        setError("Username must be at least 3 characters");
+        return;
+      }
+      if (!/^[a-zA-Z0-9_]+$/.test(formData.username)) {
+        setError("Username can only contain letters, numbers, and underscores");
+        return;
+      }
+      if (formData.password.length < 6) {
+        setError("Password must be at least 6 characters");
+        return;
+      }
     }
+    setError(null);
+    setStep((s) => s + 1);
+  };
+  const prevStep = () => {
+    setError(null);
+    setStep((s) => s - 1);
   };
 
-  const handleGoogleSignIn = async () => {
+  const handleFinish = async () => {
     setLoading(true);
     setError(null);
     try {
-      const provider = new GoogleAuthProvider();
-      const result = await signInWithPopup(auth, provider);
-      const user = result.user;
+      const email = `${formData.username.toLowerCase()}@savingpad.app`;
+      let userCredential;
 
-      const userPath = `users/${user.uid}`;
-      try {
-        const userDoc = await getDoc(doc(db, 'users', user.uid));
-        const userData: any = {
-          uid: user.uid,
-          email: user.email,
-          displayName: user.displayName,
-          cycleLength: formData.cycleLength,
-          periodLength: formData.periodLength,
-          lastPeriodStart: formData.lastPeriodStart,
-          preferences: {
-            notificationsEnabled: formData.notificationsEnabled,
-            padReminders: formData.padReminders,
-          },
-        };
-
-        if (!userDoc.exists()) {
-          userData.createdAt = serverTimestamp();
-        }
-
-        await setDoc(doc(db, 'users', user.uid), userData, { merge: true });
-      } catch (err: any) {
-        if (err.code === 'permission-denied') {
-          handleFirestoreError(err, OperationType.WRITE, userPath);
-        }
-        throw err;
+      if (formData.isLogin) {
+        userCredential = await signInWithEmailAndPassword(auth, email, formData.password);
+      } else {
+        userCredential = await createUserWithEmailAndPassword(auth, email, formData.password);
       }
 
+      const user = userCredential.user;
+      
+      const userData = {
+        uid: user.uid,
+        email: user.email,
+        displayName: formData.username,
+        cycleLength: formData.cycleLength,
+        periodLength: formData.periodLength,
+        lastPeriodStart: formData.lastPeriodStart,
+        preferences: {
+          notificationsEnabled: formData.notificationsEnabled,
+          padReminders: formData.padReminders,
+        },
+        isGuest: false,
+        createdAt: serverTimestamp(),
+      };
+      
+      await setDoc(doc(db, 'users', user.uid), userData);
       onComplete();
     } catch (err: any) {
-      setError(err.message);
+      console.error("Auth error:", err);
+      if (err.code === 'auth/email-already-in-use') {
+        setError("Username already taken. Try logging in instead.");
+      } else if (err.code === 'auth/wrong-password') {
+        setError("Incorrect password.");
+      } else if (err.code === 'auth/user-not-found') {
+        setError("User not found. Try signing up.");
+      } else {
+        setError(err.message || "An error occurred during authentication.");
+      }
     } finally {
       setLoading(false);
     }
@@ -171,7 +160,59 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
       </div>
     </div>,
 
-    // Step 3: Cycle Preferences
+    // Step 3: Account Creation
+    <div className="flex flex-col space-y-6">
+      <div className="text-center">
+        <h2 className="text-2xl font-bold text-brand-900">
+          {formData.isLogin ? 'Welcome Back' : 'Create Account'}
+        </h2>
+        <p className="text-brand-600 text-sm">
+          {formData.isLogin ? 'Log in to sync your data' : 'Save your progress and sync across devices'}
+        </p>
+      </div>
+
+      <div className="space-y-4">
+        {error && (
+          <div className="p-3 bg-red-50 text-red-600 text-xs rounded-xl border border-red-100 flex items-center gap-2">
+            <Info size={14} />
+            {error}
+          </div>
+        )}
+        <div className="relative">
+          <User className="absolute left-4 top-1/2 -translate-y-1/2 text-brand-400" size={20} />
+          <input 
+            type="text" 
+            placeholder="Username"
+            value={formData.username}
+            onChange={(e) => setFormData({...formData, username: e.target.value})}
+            className="w-full p-4 pl-12 bg-white border border-brand-200 rounded-xl focus:ring-2 focus:ring-brand-500 outline-none"
+          />
+        </div>
+        <div className="relative">
+          <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-brand-400" size={20} />
+          <input 
+            type="password" 
+            placeholder="Password"
+            value={formData.password}
+            onChange={(e) => setFormData({...formData, password: e.target.value})}
+            className="w-full p-4 pl-12 bg-white border border-brand-200 rounded-xl focus:ring-2 focus:ring-brand-500 outline-none"
+          />
+        </div>
+        <button 
+          onClick={() => setFormData({...formData, isLogin: !formData.isLogin})}
+          className="text-xs font-bold text-brand-600 hover:text-brand-700 transition-colors"
+        >
+          {formData.isLogin ? "Don't have an account? Sign Up" : "Already have an account? Log In"}
+        </button>
+      </div>
+
+      <div className="flex gap-4 w-full pt-4">
+        <button onClick={prevStep} className="flex-1 py-4 bg-white border border-brand-200 text-brand-600 rounded-2xl font-semibold">Back</button>
+        <button onClick={nextStep} className="flex-1 py-4 bg-brand-600 text-white rounded-2xl font-semibold">Next</button>
+      </div>
+    </div>,
+
+    // Step 4: Cycle Preferences
     <div className="flex flex-col space-y-6">
       <div className="text-center">
         <h2 className="text-2xl font-bold text-brand-900">Tell us about your cycle</h2>
@@ -214,7 +255,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
       </div>
     </div>,
 
-    // Step 4: Notification Preferences
+    // Step 5: Notification Preferences
     <div className="flex flex-col space-y-6">
       <div className="text-center">
         <h2 className="text-2xl font-bold text-brand-900">Stay Updated</h2>
@@ -257,60 +298,14 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
       <div className="flex gap-4 w-full pt-4">
         <button onClick={prevStep} className="flex-1 py-4 bg-white border border-brand-200 text-brand-600 rounded-2xl font-semibold">Back</button>
-        <button onClick={nextStep} className="flex-1 py-4 bg-brand-600 text-white rounded-2xl font-semibold">Almost There!</button>
-      </div>
-    </div>,
-
-    // Step 5: Sign Up
-    <div className="flex flex-col space-y-6">
-      <div className="text-center">
-        <h2 className="text-2xl font-bold text-brand-900">Create Your Account</h2>
-        <p className="text-brand-600 text-sm">Save your data and sync across devices.</p>
-      </div>
-
-      <div className="space-y-4">
-        <input 
-          type="email" 
-          placeholder="Email Address"
-          value={formData.email}
-          onChange={(e) => setFormData({...formData, email: e.target.value})}
-          className="w-full p-4 bg-white border border-brand-200 rounded-xl focus:ring-2 focus:ring-brand-500 outline-none"
-        />
-        <input 
-          type="password" 
-          placeholder="Password"
-          value={formData.password}
-          onChange={(e) => setFormData({...formData, password: e.target.value})}
-          className="w-full p-4 bg-white border border-brand-200 rounded-xl focus:ring-2 focus:ring-brand-500 outline-none"
-        />
-        
-        {error && <p className="text-red-500 text-xs text-center">{error}</p>}
-
         <button 
-          onClick={handleSignUp}
+          onClick={handleFinish} 
           disabled={loading}
-          className="w-full py-4 bg-brand-600 text-white rounded-2xl font-semibold disabled:opacity-50"
+          className="flex-1 py-4 bg-brand-600 text-white rounded-2xl font-semibold disabled:opacity-50"
         >
-          {loading ? 'Creating Account...' : 'Sign Up'}
-        </button>
-
-        <div className="flex items-center gap-4 py-2">
-          <div className="flex-1 h-px bg-brand-200"></div>
-          <span className="text-brand-400 text-sm">OR</span>
-          <div className="flex-1 h-px bg-brand-200"></div>
-        </div>
-
-        <button 
-          onClick={handleGoogleSignIn}
-          disabled={loading}
-          className="w-full py-4 bg-white border border-brand-200 text-brand-900 rounded-2xl font-semibold flex items-center justify-center gap-2"
-        >
-          <img src="https://www.google.com/favicon.ico" alt="Google" className="w-5 h-5" />
-          Continue with Google
+          {loading ? 'Saving...' : 'Finish'}
         </button>
       </div>
-
-      <button onClick={prevStep} className="w-full text-brand-600 text-sm font-semibold">Back</button>
     </div>
   ];
 

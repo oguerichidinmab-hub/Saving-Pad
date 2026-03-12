@@ -12,7 +12,8 @@ import {
   addDays, 
   eachDayOfInterval,
   isWithinInterval,
-  parseISO
+  parseISO,
+  differenceInDays
 } from 'date-fns';
 import { ChevronLeft, ChevronRight, Plus, Info, Check, X, Droplets, Sparkles, Zap, Heart } from 'lucide-react';
 import { db, auth } from '../firebase';
@@ -145,7 +146,7 @@ const Calendar: React.FC<CalendarProps> = ({ userProfile }) => {
         }
       });
 
-      // Simple prediction logic (very basic for now)
+      // Improved prediction logic
       let isPredicted = false;
       if (userProfile?.lastPeriodStart && userProfile?.lastPeriodStart !== "" && userProfile?.cycleLength) {
         try {
@@ -154,13 +155,22 @@ const Calendar: React.FC<CalendarProps> = ({ userProfile }) => {
             const cycleLen = userProfile.cycleLength;
             const periodLen = userProfile.periodLength || 5;
             
-            // Check next 3 cycles for prediction
-            for (let j = 1; j <= 3; j++) {
-              const predStart = addDays(lastStart, cycleLen * j);
+            // Calculate how many cycles have passed since lastStart to the current day
+            const diffDays = differenceInDays(day, lastStart);
+            if (diffDays >= 0) {
+              const cyclesPassed = Math.floor(diffDays / cycleLen);
+              const predStart = addDays(lastStart, cyclesPassed * cycleLen);
               const predEnd = addDays(predStart, periodLen - 1);
+              
               if (isWithinInterval(day, { start: predStart, end: predEnd })) {
                 isPredicted = true;
-                break;
+              }
+              
+              // Also check the next cycle in case the current day is at the very beginning of it
+              const nextPredStart = addDays(lastStart, (cyclesPassed + 1) * cycleLen);
+              const nextPredEnd = addDays(nextPredStart, periodLen - 1);
+              if (isWithinInterval(day, { start: nextPredStart, end: nextPredEnd })) {
+                isPredicted = true;
               }
             }
           }
@@ -169,41 +179,59 @@ const Calendar: React.FC<CalendarProps> = ({ userProfile }) => {
         }
       }
 
+      // Check if this day has symptoms or mood logged
+      const dayLog = logs.find(l => l.startDate === format(day, 'yyyy-MM-dd'));
+      const hasSymptoms = dayLog?.symptoms?.length > 0;
+      const hasMood = !!dayLog?.mood;
+
       days.push(
         <div
           key={day.toString()}
-          className={`relative h-12 flex items-center justify-center cursor-pointer transition-all
-            ${!isCurrentMonth ? 'text-brand-200' : 'text-brand-800'}
+          className={`relative h-14 flex items-center justify-center cursor-pointer transition-all group
+            ${!isCurrentMonth ? 'opacity-30' : 'opacity-100'}
             ${isSelected ? 'z-10' : ''}
           `}
           onClick={() => setSelectedDate(day)}
         >
           {/* Selection Highlight */}
           {isSelected && (
-            <div className="absolute inset-1 border-2 border-brand-500 rounded-xl" />
+            <div className="absolute inset-1.5 border-2 border-brand-600 rounded-2xl shadow-sm" />
           )}
           
           {/* Period Backgrounds */}
           {isLoggedPeriod && (
-            <div className={`absolute inset-0.5 bg-pink-500/20 rounded-lg ${isSameDay(day, new Date()) ? 'ring-1 ring-pink-500' : ''}`} />
+            <div className={`absolute inset-1 bg-pink-100 rounded-xl ${isToday ? 'ring-2 ring-pink-500 ring-offset-1' : ''}`} />
           )}
           {isPredicted && !isLoggedPeriod && (
-            <div className="absolute inset-0.5 bg-brand-500/10 border border-dashed border-brand-300 rounded-lg" />
+            <div className="absolute inset-1 bg-pink-50/50 border-2 border-dashed border-pink-200 rounded-xl" />
           )}
 
-          <span className={`relative text-sm font-medium ${isToday ? 'text-brand-600 font-bold underline underline-offset-4 decoration-2' : ''}`}>
-            {formattedDate}
-          </span>
-          
-          {/* Indicator dots for symptoms */}
-          {logs.some(l => l.startDate === format(day, 'yyyy-MM-dd') && l.symptoms?.length > 0) && (
-            <div className="absolute bottom-1.5 flex gap-0.5">
-              <div className="w-1 h-1 bg-brand-400 rounded-full" />
+          <div className="relative flex flex-col items-center gap-1">
+            <span className={`text-sm font-bold ${
+              isToday ? 'text-brand-600' : 
+              isLoggedPeriod ? 'text-pink-700' : 
+              isPredicted ? 'text-pink-400' : 
+              'text-brand-800'
+            }`}>
+              {formattedDate}
+            </span>
+            
+            {/* Indicators Container */}
+            <div className="flex gap-1 h-1">
+              {hasSymptoms && (
+                <div className="w-1 h-1 bg-purple-500 rounded-full shadow-sm" />
+              )}
+              {hasMood && (
+                <div className="w-1 h-1 bg-amber-400 rounded-full shadow-sm" />
+              )}
+              {isLoggedPeriod && (
+                <div className="w-1 h-1 bg-pink-500 rounded-full shadow-sm" />
+              )}
             </div>
-          )}
-          
-          {isLoggedPeriod && (
-            <div className="absolute bottom-1 w-1 h-1 bg-pink-500 rounded-full" />
+          </div>
+
+          {isToday && !isLoggedPeriod && !isPredicted && (
+            <div className="absolute top-2 right-2 w-1.5 h-1.5 bg-brand-500 rounded-full" />
           )}
         </div>
       );
@@ -317,18 +345,22 @@ const Calendar: React.FC<CalendarProps> = ({ userProfile }) => {
       {renderCells()}
 
       {/* Legend */}
-      <div className="flex flex-wrap gap-4 px-2 text-[10px] font-bold uppercase tracking-wider text-brand-400">
+      <div className="flex flex-wrap gap-4 px-4 py-3 bg-brand-50/50 rounded-2xl border border-brand-100 text-[10px] font-bold uppercase tracking-wider text-brand-500">
         <div className="flex items-center gap-2">
-          <div className="w-3 h-3 bg-pink-500/20 border border-pink-500 rounded" />
-          <span>Period</span>
+          <div className="w-4 h-4 bg-pink-100 rounded-md border border-pink-200" />
+          <span>Logged Period</span>
         </div>
         <div className="flex items-center gap-2">
-          <div className="w-3 h-3 bg-brand-500/10 border border-dashed border-brand-300 rounded" />
+          <div className="w-4 h-4 bg-pink-50/50 border-2 border-dashed border-pink-200 rounded-md" />
           <span>Predicted</span>
         </div>
         <div className="flex items-center gap-2">
-          <div className="w-1 h-1 bg-brand-400 rounded-full" />
+          <div className="w-1.5 h-1.5 bg-purple-500 rounded-full" />
           <span>Symptoms</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="w-1.5 h-1.5 bg-amber-400 rounded-full" />
+          <span>Mood</span>
         </div>
       </div>
 

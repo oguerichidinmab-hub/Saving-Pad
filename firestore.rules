@@ -83,7 +83,7 @@ service cloud.firestore {
     // ===============================================================
 
     function isValidUser(data) {
-      return hasOnlyAllowedFields(data, ['uid', 'email', 'displayName', 'cycleLength', 'periodLength', 'lastPeriodStart', 'preferences', 'createdAt']) &&
+      return hasOnlyAllowedFields(data, ['uid', 'email', 'displayName', 'cycleLength', 'periodLength', 'lastPeriodStart', 'preferences', 'createdAt', 'isGuest', 'photoURL']) &&
              data.uid == request.auth.uid &&
              isValidEmail(data.email) &&
              (!('cycleLength' in data) || (data.cycleLength is int && data.cycleLength >= 10 && data.cycleLength <= 60)) &&

@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react';
+import React from 'react';
 import { onAuthStateChanged, User, signOut } from 'firebase/auth';
-import { doc, getDoc, getDocFromServer, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc, getDocFromServer, onSnapshot, setDoc } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import Onboarding from './components/Onboarding';
+import SplashScreen from './components/SplashScreen';
 import Calendar from './components/Calendar';
 import PadLocator from './components/Map';
 import Education from './components/Education';
@@ -12,6 +14,7 @@ import Donate from './components/Donate';
 import PartnerOnboarding from './components/PartnerOnboarding';
 import ErrorBoundary from './components/ErrorBoundary';
 import { handleFirestoreError, OperationType } from './utils/errorHandlers';
+import { DAILY_TIPS } from './constants/tips';
 import { 
   Home, 
   Calendar as CalendarIcon, 
@@ -25,7 +28,7 @@ import {
   Users,
   Building2
 } from 'lucide-react';
-import { format, addDays, parseISO, differenceInDays } from 'date-fns';
+import { format, addDays, parseISO, differenceInDays, isBefore } from 'date-fns';
 
 type View = 'home' | 'calendar' | 'map' | 'education' | 'community' | 'partners' | 'donate' | 'partner-onboarding' | 'profile';
 
@@ -35,8 +38,29 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [currentView, setCurrentView] = useState<View>('home');
+  const [showSplash, setShowSplash] = useState(true);
+  const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [isEditingCycle, setIsEditingCycle] = useState(false);
 
   useEffect(() => {
+    const timer = setTimeout(() => {
+      setShowSplash(false);
+    }, 2500);
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    const checkLocalProfile = () => {
+      const localProfile = localStorage.getItem('saving_pad_profile');
+      if (localProfile) {
+        setUserProfile(JSON.parse(localProfile));
+        setShowOnboarding(false);
+        setLoading(false);
+        return true;
+      }
+      return false;
+    };
+
     const unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser) {
         setUser(currentUser);
@@ -48,7 +72,10 @@ export default function App() {
             setUserProfile(docSnap.data());
             setShowOnboarding(false);
           } else {
-            setShowOnboarding(true);
+            // If logged in but no profile, check local or show onboarding
+            if (!checkLocalProfile()) {
+              setShowOnboarding(true);
+            }
           }
           setLoading(false);
         }, (error: any) => {
@@ -56,15 +83,19 @@ export default function App() {
             handleFirestoreError(error, OperationType.GET, userPath);
           }
           console.error("Error fetching user doc:", error);
-          setShowOnboarding(true);
+          if (!checkLocalProfile()) {
+            setShowOnboarding(true);
+          }
           setLoading(false);
         });
 
         return () => unsubscribeProfile();
       } else {
         setUser(null);
-        setUserProfile(null);
-        setShowOnboarding(true);
+        if (!checkLocalProfile()) {
+          setUserProfile(null);
+          setShowOnboarding(true);
+        }
         setLoading(false);
       }
     });
@@ -77,11 +108,22 @@ export default function App() {
     try {
       const lastStart = parseISO(userProfile.lastPeriodStart);
       if (isNaN(lastStart.getTime())) return null;
-      const nextStart = addDays(lastStart, userProfile.cycleLength);
-      const daysUntil = differenceInDays(nextStart, new Date());
+      
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      let nextStart = addDays(lastStart, userProfile.cycleLength);
+      
+      // If the predicted date is in the past, find the next future occurrence
+      while (isBefore(nextStart, today)) {
+        nextStart = addDays(nextStart, userProfile.cycleLength);
+      }
+      
+      const daysUntil = differenceInDays(nextStart, today);
+      
       return {
         date: nextStart,
-        daysUntil: daysUntil > 0 ? daysUntil : (userProfile.cycleLength + (daysUntil % userProfile.cycleLength)) % userProfile.cycleLength
+        daysUntil: daysUntil
       };
     } catch (e) {
       return null;
@@ -90,15 +132,20 @@ export default function App() {
 
   const nextPeriod = calculateNextPeriod();
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-brand-50 flex items-center justify-center">
-        <div className="animate-pulse flex flex-col items-center gap-4">
-          <div className="w-16 h-16 bg-brand-200 rounded-full"></div>
-          <div className="h-4 w-24 bg-brand-200 rounded"></div>
-        </div>
-      </div>
-    );
+  // Get daily tip based on current date
+  const getDailyTip = () => {
+    const today = new Date();
+    const startOfYear = new Date(today.getFullYear(), 0, 0);
+    const diff = today.getTime() - startOfYear.getTime();
+    const oneDay = 1000 * 60 * 60 * 24;
+    const dayOfYear = Math.floor(diff / oneDay);
+    return DAILY_TIPS[dayOfYear % DAILY_TIPS.length];
+  };
+
+  const dailyTip = getDailyTip();
+
+  if (showSplash || (loading && !userProfile)) {
+    return <SplashScreen />;
   }
 
   if (showOnboarding) {
@@ -108,6 +155,32 @@ export default function App() {
       </ErrorBoundary>
     );
   }
+
+  const updateProfile = async (newData: any) => {
+    const updatedProfile = { ...userProfile, ...newData };
+    setUserProfile(updatedProfile);
+    
+    if (userProfile?.isGuest) {
+      localStorage.setItem('saving_pad_profile', JSON.stringify(updatedProfile));
+    } else if (user) {
+      try {
+        await setDoc(doc(db, 'users', user.uid), updatedProfile, { merge: true });
+      } catch (error) {
+        console.error("Error updating profile:", error);
+      }
+    }
+  };
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        updateProfile({ photoURL: reader.result as string });
+      };
+      reader.readAsDataURL(file);
+    }
+  };
 
   const renderView = () => {
     switch (currentView) {
@@ -163,7 +236,7 @@ export default function App() {
                 <h3 className="font-bold text-brand-900">Daily Tip</h3>
               </div>
               <p className="text-brand-700 text-sm leading-relaxed">
-                Drinking plenty of water and staying hydrated can help reduce bloating and cramps during your period.
+                {dailyTip}
               </p>
             </div>
 
@@ -225,27 +298,111 @@ export default function App() {
       case 'profile':
         return (
           <div className="space-y-6">
-            <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-brand-100 text-center">
-              <div className="w-24 h-24 bg-brand-100 text-brand-600 rounded-full flex items-center justify-center mx-auto mb-4">
-                <UserIcon size={48} />
+            <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-brand-100 text-center relative overflow-hidden">
+              <div className="relative z-10">
+                <div className="relative w-24 h-24 mx-auto mb-4">
+                  <div className="w-24 h-24 bg-brand-100 text-brand-600 rounded-full flex items-center justify-center overflow-hidden border-4 border-white shadow-sm">
+                    {userProfile?.photoURL ? (
+                      <img src={userProfile.photoURL} alt="Profile" className="w-full h-full object-cover" />
+                    ) : (
+                      <UserIcon size={48} />
+                    )}
+                  </div>
+                  <label className="absolute bottom-0 right-0 w-8 h-8 bg-brand-600 text-white rounded-full flex items-center justify-center cursor-pointer shadow-lg hover:bg-brand-700 transition-colors">
+                    <Plus size={16} />
+                    <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} />
+                  </label>
+                </div>
+                
+                {isEditingProfile ? (
+                  <div className="space-y-3">
+                    <input 
+                      type="text" 
+                      defaultValue={userProfile?.displayName || user?.displayName || ''}
+                      placeholder="Enter your name"
+                      className="w-full p-3 bg-brand-50 border border-brand-100 rounded-xl text-center font-bold text-brand-900 focus:ring-2 focus:ring-brand-500 outline-none"
+                      onBlur={(e) => {
+                        updateProfile({ displayName: e.target.value });
+                        setIsEditingProfile(false);
+                      }}
+                      autoFocus
+                    />
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center gap-2">
+                    <h2 className="text-2xl font-bold text-brand-900">
+                      {userProfile?.displayName || user?.displayName || (userProfile?.isGuest ? 'Guest User' : 'User')}
+                    </h2>
+                    <button onClick={() => setIsEditingProfile(true)} className="text-brand-400 hover:text-brand-600">
+                      <Settings size={16} />
+                    </button>
+                  </div>
+                )}
+                <p className="text-brand-500 text-sm mt-1">{user?.email || 'Local Profile'}</p>
               </div>
-              <h2 className="text-2xl font-bold text-brand-900">{user?.displayName || 'User'}</h2>
-              <p className="text-brand-500 text-sm">{user?.email}</p>
+              <div className="absolute top-0 right-0 w-32 h-32 bg-brand-50 rounded-full -mr-16 -mt-16 blur-2xl opacity-50" />
             </div>
+
+            {isEditingCycle && (
+              <div className="bg-white p-6 rounded-[2rem] shadow-sm border border-brand-500 space-y-4">
+                <div className="flex justify-between items-center mb-2">
+                  <h3 className="font-bold text-brand-900">Edit Cycle Settings</h3>
+                  <button onClick={() => setIsEditingCycle(false)} className="text-brand-400">✕</button>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[10px] font-bold text-brand-400 uppercase mb-1">Cycle Length</label>
+                    <input 
+                      type="number" 
+                      value={userProfile?.cycleLength || 28}
+                      onChange={(e) => updateProfile({ cycleLength: parseInt(e.target.value) })}
+                      className="w-full p-3 bg-brand-50 border border-brand-100 rounded-xl font-bold text-brand-900"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-brand-400 uppercase mb-1">Period Length</label>
+                    <input 
+                      type="number" 
+                      value={userProfile?.periodLength || 5}
+                      onChange={(e) => updateProfile({ periodLength: parseInt(e.target.value) })}
+                      className="w-full p-3 bg-brand-50 border border-brand-100 rounded-xl font-bold text-brand-900"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-brand-400 uppercase mb-1">Last Period Start</label>
+                  <input 
+                    type="date" 
+                    value={userProfile?.lastPeriodStart || ''}
+                    onChange={(e) => updateProfile({ lastPeriodStart: e.target.value })}
+                    className="w-full p-3 bg-brand-50 border border-brand-100 rounded-xl font-bold text-brand-900"
+                  />
+                </div>
+                <button 
+                  onClick={() => setIsEditingCycle(false)}
+                  className="w-full py-3 bg-brand-600 text-white rounded-xl font-bold text-sm"
+                >
+                  Save Changes
+                </button>
+              </div>
+            )}
 
             <div className="bg-white rounded-[2rem] shadow-sm border border-brand-100 overflow-hidden">
               <div className="p-4 border-b border-brand-50">
                 <h3 className="font-bold text-brand-900 px-2">Settings</h3>
               </div>
               <div className="divide-y divide-brand-50">
-                <button className="w-full p-6 flex items-center justify-between hover:bg-brand-50 transition-colors">
+                <button 
+                  onClick={() => setIsEditingCycle(!isEditingCycle)}
+                  className={`w-full p-6 flex items-center justify-between hover:bg-brand-50 transition-colors ${isEditingCycle ? 'bg-brand-50' : ''}`}
+                >
                   <div className="flex items-center gap-4">
                     <div className="w-10 h-10 bg-brand-50 text-brand-500 rounded-xl flex items-center justify-center">
                       <Settings size={20} />
                     </div>
                     <span className="font-semibold text-brand-900">Cycle Settings</span>
                   </div>
-                  <ChevronRight size={20} className="text-brand-300" />
+                  <ChevronRight size={20} className={`text-brand-300 transition-transform ${isEditingCycle ? 'rotate-90' : ''}`} />
                 </button>
                 <button 
                   onClick={() => setCurrentView('partners')}
@@ -260,14 +417,21 @@ export default function App() {
                   <ChevronRight size={20} className="text-brand-300" />
                 </button>
                 <button 
-                  onClick={() => signOut(auth)}
+                  onClick={() => {
+                    if (userProfile?.isGuest) {
+                      localStorage.removeItem('saving_pad_profile');
+                      window.location.reload();
+                    } else {
+                      signOut(auth);
+                    }
+                  }}
                   className="w-full p-6 flex items-center justify-between hover:bg-red-50 transition-colors group"
                 >
                   <div className="flex items-center gap-4">
                     <div className="w-10 h-10 bg-red-50 text-red-500 rounded-xl flex items-center justify-center group-hover:bg-red-100 transition-colors">
                       <LogOut size={20} />
                     </div>
-                    <span className="font-semibold text-red-600">Sign Out</span>
+                    <span className="font-semibold text-red-600">Log Out</span>
                   </div>
                 </button>
               </div>
