@@ -1,0 +1,5 @@
+{
+  "name": "Saving Pad",
+  "description": "A menstrual cycle tracker and pad access app for teenage girls, providing education and community support.",
+  "requestFramePermissions": ["geolocation"]
+}

@@ -1,0 +1,148 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId} (matches auth.uid)
+    // Fields:
+    //   - uid: string (required)
+    //   - email: string (required, email format)
+    //   - displayName: string (optional)
+    //   - cycleLength: int (optional, 20-45)
+    //   - periodLength: int (optional, 1-10)
+    //   - lastPeriodStart: string (optional, date format)
+    //   - preferences: map (optional)
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: users/{userId}/logs
+    // Document ID: {logId}
+    // Fields:
+    //   - uid: string (required)
+    //   - startDate: string (required, date format)
+    //   - endDate: string (optional, date format)
+    //   - symptoms: list (optional)
+    //   - mood: string (optional)
+    //
+    // Collection: community_groups
+    // Document ID: {groupId}
+    // Fields:
+    //   - id: string
+    //   - title: string
+    //   - members: string
+    //   - iconType: string
+    //
+    // Collection: success_stories
+    // Document ID: {storyId}
+    // Fields:
+    //   - id: string
+    //   - content: string
+    //   - author: string
+    //   - image: string
+    //
+    // Collection: partners
+    // Document ID: {partnerId}
+    // Fields:
+    //   - id: string
+    //   - name: string
+    //   - logo: string
+    //   - description: string
+    //   - website: string
+    //   - type: string
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}$");
+    }
+
+    function hasOnlyAllowedFields(data, allowedFields) {
+      return data.keys().hasOnly(allowedFields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return hasOnlyAllowedFields(data, ['uid', 'email', 'displayName', 'cycleLength', 'periodLength', 'lastPeriodStart', 'preferences', 'createdAt']) &&
+             data.uid == request.auth.uid &&
+             isValidEmail(data.email) &&
+             (!('cycleLength' in data) || (data.cycleLength is int && data.cycleLength >= 10 && data.cycleLength <= 60)) &&
+             (!('periodLength' in data) || (data.periodLength is int && data.periodLength >= 1 && data.periodLength <= 20)) &&
+             (!('lastPeriodStart' in data) || data.lastPeriodStart == "" || isValidDateString(data.lastPeriodStart));
+    }
+
+    function isValidLog(data) {
+      return hasOnlyAllowedFields(data, ['uid', 'startDate', 'endDate', 'symptoms', 'mood', 'type', 'createdAt']) &&
+             data.uid == request.auth.uid &&
+             (data.startDate == "" || isValidDateString(data.startDate)) &&
+             (!('endDate' in data) || data.endDate == "" || isValidDateString(data.endDate)) &&
+             (!('symptoms' in data) || data.symptoms is list) &&
+             (!('mood' in data) || data.mood is string) &&
+             (!('type' in data) || data.type is string);
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && 
+                      request.resource.data.uid == resource.data.uid &&
+                      (
+                        !('createdAt' in request.resource.data) || 
+                        !('createdAt' in resource.data) || 
+                        request.resource.data.createdAt == resource.data.createdAt
+                      );
+      
+      match /logs/{logId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidLog(request.resource.data);
+        allow update: if isOwner(userId) && isValidLog(request.resource.data) &&
+                        request.resource.data.uid == resource.data.uid;
+        allow delete: if isOwner(userId);
+      }
+    }
+
+    match /community_groups/{groupId} {
+      allow read: if true;
+      allow write: if false; // Read-only for users, managed by admin
+    }
+
+    match /success_stories/{storyId} {
+      allow read: if true;
+      allow write: if false; // Read-only for users, managed by admin
+    }
+
+    match /partners/{partnerId} {
+      allow read: if true; // Allow public read for partners to avoid permission issues during onboarding
+      allow write: if false; 
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
